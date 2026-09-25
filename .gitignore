@@ -1,0 +1,11 @@
+# Nothing collected on an engagement belongs in this repository.
+Output/
+Logs/
+*.csv
+*.evtx
+*.zip
+SUMMARY.txt
+
+# Local scratch
+*.tmp
+.vs/
