@@ -24,14 +24,19 @@ Then:
 powershell -ExecutionPolicy Bypass -File C:\work\Fieldkit\Start-Fieldkit.ps1
 ```
 
-**If the repository is private**, the download returns 404. Either carry the ZIP
-in and use `-FromZip C:\path\to\kit.zip`, or pass a read-only `-Token`. Prefer
-the ZIP: a token pasted into a console on a client's server stays in that
-machine's history.
-
 **On a restricted client network** the download may be blocked by a proxy or a
-TLS-inspecting firewall. Carrying the ZIP in is the reliable path and takes less
-time than arguing with the firewall.
+TLS-inspecting firewall, and on an isolated segment there is no route at all.
+Download the ZIP on your own machine, carry it in, and use:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Get-Fieldkit.ps1 -FromZip C:\path\to\kit.zip
+```
+
+That is the reliable path and it takes less time than arguing with the firewall.
+
+**`-Update` replaces an existing copy.** Output and logs are never touched,
+because they live outside the kit folder. Without `-Update`, installing over an
+existing copy is refused rather than done silently.
 
 ---
 
@@ -42,7 +47,7 @@ the client for something of their own. A folder called `work` at the root of
 `C:` is unambiguous, both while you are using it and six months later when
 someone asks what was put on the server.
 
-```
+```text
 C:\work\
   Fieldkit\     the kit itself
   Output\       one folder per tool run, named tool-host-date-time
@@ -72,7 +77,7 @@ exactly what you left behind.
 
 ## The menu
 
-```
+```text
  ACTIVE DIRECTORY
   1  [needs Active Directory PowerShell module]  Active Directory Snapshot
   2  [ready]  Group Policy Inventory
@@ -191,3 +196,10 @@ no change to the menu itself. See [Docs/ADDING-A-TOOL.md](Docs/ADDING-A-TOOL.md)
 **No client data.** No findings, no exports, no hostnames, no addresses, no
 client names. This repository is tooling. Anything collected on an engagement
 lives in that engagement's own storage, never here.
+
+**This repository is public**, which is what makes the one-line install work
+without a credential on a client machine. That is also why the rule above is
+absolute rather than a preference: there is no private corner of this repo to
+put something in by mistake. Output is written to `C:\work` on the machine being
+examined and is `.gitignore`d here, but the real safeguard is not committing it
+in the first place.

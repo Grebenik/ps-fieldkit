@@ -15,9 +15,11 @@
         iwr https://raw.githubusercontent.com/Grebenik/ps-fieldkit/main/Get-Fieldkit.ps1 -OutFile $env:TEMP\Get-Fieldkit.ps1
         powershell -ExecutionPolicy Bypass -File $env:TEMP\Get-Fieldkit.ps1
 
-    That works only while the repository is public. If it is private, use
-    -Token with a read-only personal access token, or download the ZIP on your
-    own laptop and copy it across. Both are described below.
+    The repository is public, so that works with no credential of any kind.
+
+    On a network that blocks it, or an isolated segment with no route out,
+    download the ZIP on your own machine and use -FromZip. That is the reliable
+    path and it takes less time than arguing with a proxy.
 
     ---------------------------------------------------------------------------
     A WORD ABOUT TOKENS ON CLIENT MACHINES
