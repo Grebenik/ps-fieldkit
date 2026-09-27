@@ -117,6 +117,9 @@ the check, and it says so before it starts.
 | `RSAT-GP` | GroupPolicy module | as above |
 | `RSAT-DNS` | DnsServer module | as above |
 | `RSAT-DHCP` | DhcpServer module | as above |
+| `RSAT-ADCS` | ADCSAdministration module | as above |
+| `RSAT-SERVERMGR` | ServerManager module | workstation only; built in on Server |
+| `PS7` | PowerShell 7 | `winget`. A convenience: every tool here runs on 5.1 |
 | `PS-MODULE-PSWindowsUpdate` | PSWindowsUpdate | PowerShell Gallery, CurrentUser scope |
 | `ELEVATION` | administrator rights | not installable; restart PowerShell elevated |
 
@@ -127,6 +130,20 @@ so offering the wrong one produces a confusing failure rather than an install.
 Capability names carry a build-specific version suffix, so the installer
 searches for the real name rather than hardcoding one that works on only some
 versions of Windows.
+
+### The RSAT install that fails on a managed workstation
+
+RSAT is a Feature on Demand and comes from Windows Update. **On a machine
+managed by WSUS the install fails with `0x800f0954`**, because the request goes
+to WSUS, which does not carry the payload. The error message says nothing about
+WSUS, so the usual response is to re-run it, check the capability name, check
+the network, and find the cause an hour later.
+
+That state is knowable in advance from two registry values, so the prerequisites
+menu reads them and reports the optional feature source as `OK`, `BLOCKED` or
+`COULD NOT DETERMINE` **before** you try. On `BLOCKED` it prints the policy that
+fixes it, and notes that carrying the module in from another machine is often
+faster than getting the change approved.
 
 ### Three states, not two
 
@@ -165,6 +182,19 @@ second as the first, and it will do it in a document with your name on it.
 | **Patch Posture** | nothing | Where does it get updates, is it allowed to install them, when did it last actually do so |
 | **Active Directory Snapshot** | `RSAT-AD` | Functional levels, FSMO roles, trusts, password policy, privileged groups, krbtgt age, stale and risky accounts |
 | **Group Policy Inventory** | `RSAT-GP`, `RSAT-AD` | Every GPO, where it is linked, what is unlinked or empty, and optional full settings reports |
+| **Jumpbox Posture** | nothing | **Audits the admin workstation you are standing on**: Credential Guard, LSA protection, BitLocker, cached logons, RDP delegation, PowerShell logging, application control, LAPS, and what privilege your own token holds |
+
+**Jumpbox Posture is the one that audits you.** Every credential you use on an
+engagement passes through that machine, and it is the only one nobody else is
+checking. It produces a control summary with `OK` / `WEAK` / `UNKNOWN` per
+control, and it is deliberately unflattering. See
+[Docs/JUMPBOX-BUILD.md](Docs/JUMPBOX-BUILD.md) for what each finding means and
+how to fix it.
+
+Two things it detects and never reads: the Winlogon autologon password value,
+and any LAPS-managed password. Presence and configuration are reported; a
+cleartext secret written into a CSV that then travels is a worse outcome than
+the finding.
 
 Two details worth knowing, because they are the ones that silently produce
 wrong answers:

@@ -270,6 +270,27 @@ function Show-PrereqMenu {
             }
         }
 
+        # On a workstation, RSAT comes from Windows Update as a Feature on
+        # Demand. Whether that can work is knowable in advance, and finding out
+        # here is much cheaper than finding out from 0x800f0954.
+        if ((Get-FieldkitOSRole) -eq 'Workstation') {
+            $fod = Test-FieldkitFodSource
+            Write-Host ''
+            Write-Host -NoNewline '   RSAT / optional feature source: '
+            switch ($fod.State) {
+                'Ready'   { Write-Host 'OK' -ForegroundColor Green }
+                'Blocked' { Write-Host 'BLOCKED' -ForegroundColor Red }
+                default   { Write-Host 'COULD NOT DETERMINE' -ForegroundColor DarkYellow }
+            }
+            Write-Host ("   $($fod.Reason)") -ForegroundColor DarkGray
+            if ($fod.State -eq 'Blocked') {
+                Write-Host ''
+                Write-Host '   Installing RSAT here will fail with 0x800f0954 until that policy' -ForegroundColor Yellow
+                Write-Host '   is changed. Carrying the module in from another machine is often'  -ForegroundColor Yellow
+                Write-Host '   faster than getting the change approved.'                          -ForegroundColor Yellow
+            }
+        }
+
         Write-Host ''
         Write-Host '   COULD NOT CHECK is not the same as NOT INSTALLED. It means the' -ForegroundColor DarkGray
         Write-Host '   detection itself failed, so nothing is known either way.'       -ForegroundColor DarkGray

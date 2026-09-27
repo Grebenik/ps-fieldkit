@@ -96,6 +96,53 @@ function Get-FieldkitPrereqCatalog {
             Notes         = ''
         }
         [pscustomobject]@{
+            Id            = 'RSAT-ADCS'
+            Name          = 'Certificate Services management module'
+            Why           = 'Certificate template and CA review. The ADCSAdministration module.'
+            Test          = {
+                try {
+                    if (Get-Module -ListAvailable -Name ADCSAdministration -ErrorAction Stop) { 'Present' }
+                    else { 'Absent' }
+                } catch { 'Unknown' }
+            }
+            InstallServer = 'Install-WindowsFeature RSAT-ADCS'
+            InstallClient = 'Add-WindowsCapability -Online -Name Rsat.CertificateServices.Tools*'
+            Elevation     = $true
+            Internet      = $true
+            Notes         = ''
+        }
+        [pscustomobject]@{
+            Id            = 'RSAT-SERVERMGR'
+            Name          = 'Server Manager tools'
+            Why           = 'Reading roles and features on remote servers from a workstation.'
+            Test          = {
+                try {
+                    if (Get-Module -ListAvailable -Name ServerManager -ErrorAction Stop) { 'Present' }
+                    else { 'Absent' }
+                } catch { 'Unknown' }
+            }
+            InstallServer = ''   # built in on Server
+            InstallClient = 'Add-WindowsCapability -Online -Name Rsat.ServerManager.Tools*'
+            Elevation     = $true
+            Internet      = $true
+            Notes         = 'Built in on Windows Server. Only a workstation needs this.'
+        }
+        [pscustomobject]@{
+            Id            = 'PS7'
+            Name          = 'PowerShell 7'
+            Why           = 'Not required by anything in this kit, which targets 5.1, but better for ad-hoc work and parallel processing.'
+            Test          = {
+                try {
+                    if (Get-Command pwsh.exe -ErrorAction Stop) { 'Present' } else { 'Absent' }
+                } catch { 'Absent' }
+            }
+            InstallServer = 'winget install --id Microsoft.PowerShell --source winget --accept-package-agreements --accept-source-agreements'
+            InstallClient = 'winget install --id Microsoft.PowerShell --source winget --accept-package-agreements --accept-source-agreements'
+            Elevation     = $true
+            Internet      = $true
+            Notes         = 'Needs winget, which is present on Windows 11 and on Windows Server 2025 but not on Server 2019 or 2016. Every tool in this kit runs on 5.1, so this is a convenience.'
+        }
+        [pscustomobject]@{
             Id            = 'PS-MODULE-PSWindowsUpdate'
             Name          = 'PSWindowsUpdate module'
             Why           = 'Reads pending and installed updates without a WSUS console.'
@@ -123,6 +170,102 @@ function Get-FieldkitPrereqCatalog {
             Notes         = 'Not installable. Close this window and start PowerShell with Run as administrator.'
         }
     )
+}
+
+function Test-FieldkitFodSource {
+    <#
+        Will Add-WindowsCapability actually work on this machine?
+
+        THIS EXISTS BECAUSE OF ONE SPECIFIC HOUR-LONG DEAD END.
+
+        RSAT on a workstation is a Feature on Demand, and Features on Demand
+        come from Windows Update. On a machine managed by WSUS, the request is
+        sent to WSUS instead, WSUS does not carry them, and the install fails
+        with 0x800f0954. The error says nothing about WSUS, so the usual
+        response is to re-run it, then check the capability name, then check
+        the network, and only much later discover the cause.
+
+        The state is knowable BEFORE trying, from two registry values, so it is
+        read and reported instead of discovered.
+
+        The fix is a policy: Computer Configuration, Administrative Templates,
+        System, "Specify settings for optional component installation and
+        component repair", with "Download repair content and optional features
+        directly from Windows Update instead of WSUS" selected. That writes
+        RepairContentServerSource = 2.
+
+        Returns Ready, Blocked or Unknown, with the reason.
+    #>
+    $auKey   = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    $srvKey  = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Servicing'
+
+    try {
+        $au = Get-ItemProperty -Path $auKey  -ErrorAction SilentlyContinue
+        $sv = Get-ItemProperty -Path $srvKey -ErrorAction SilentlyContinue
+        return Resolve-FieldkitFodState `
+                    -UseWUServer              $(if ($au) { $au.UseWUServer } else { $null }) `
+                    -RepairContentServerSource $(if ($sv) { $sv.RepairContentServerSource } else { $null }) `
+                    -LocalSourcePath           $(if ($sv) { $sv.LocalSourcePath } else { $null })
+    }
+    catch {
+        return [pscustomobject]@{
+            State = 'Unknown'; Reason = "Could not read the servicing policy: $($_.Exception.Message)"
+            Fix = ''
+        }
+    }
+}
+
+function Resolve-FieldkitFodState {
+    <#
+        The decision, separated from the registry read so it can be tested.
+
+        Every branch here fires on a client machine and none of them fire on
+        mine, which is exactly the shape of code that ships wrong. Keeping the
+        logic pure means all four cases can be exercised without touching
+        HKLM on a real machine.
+    #>
+    param(
+        $UseWUServer,
+        $RepairContentServerSource,
+        $LocalSourcePath
+    )
+
+    $useWsus   = $UseWUServer
+    $repairSrc = $RepairContentServerSource
+    $localPath = $LocalSourcePath
+
+    # Not WSUS-managed: Features on Demand come straight from Windows Update.
+    if ($useWsus -ne 1) {
+        return [pscustomobject]@{
+            State  = 'Ready'
+            Reason = 'This machine is not pointed at WSUS for updates, so optional features come from Windows Update directly.'
+            Fix    = ''
+        }
+    }
+
+    # WSUS-managed, and told to get repair content and optional features from
+    # Windows Update anyway. This is the configuration that works.
+    if ($repairSrc -eq 2) {
+        return [pscustomobject]@{
+            State  = 'Ready'
+            Reason = 'WSUS-managed, but RepairContentServerSource is 2, so optional features bypass WSUS and come from Windows Update.'
+            Fix    = ''
+        }
+    }
+
+    if ($localPath) {
+        return [pscustomobject]@{
+            State  = 'Unknown'
+            Reason = "WSUS-managed with a LocalSourcePath set ($localPath). The install may succeed from that source if it holds the RSAT payload, which cannot be determined from here."
+            Fix    = 'If it fails with 0x800f0954, set RepairContentServerSource to 2 or point LocalSourcePath at a source that carries the Features on Demand payload.'
+        }
+    }
+
+    [pscustomobject]@{
+        State  = 'Blocked'
+        Reason = 'This machine takes updates from WSUS (UseWUServer=1) and has no policy allowing optional features to come from Windows Update. Add-WindowsCapability will almost certainly fail with 0x800f0954.'
+        Fix    = 'Group Policy: Computer Configuration, Administrative Templates, System, "Specify settings for optional component installation and component repair". Select "Download repair content and optional features directly from Windows Update instead of Windows Server Update Services (WSUS)". That sets RepairContentServerSource = 2 under HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Servicing. It is a change, so it goes through change control.'
+    }
 }
 
 function Test-FieldkitPrereq {
@@ -228,6 +371,37 @@ function Install-FieldkitPrereq {
         Write-Host '  and that failure is a property of the network, not of the kit.'  -ForegroundColor DarkYellow
     }
 
+    # For a Feature on Demand, say whether it can work BEFORE spending ten
+    # minutes finding out that it cannot.
+    if ($cmd -like 'Add-WindowsCapability*') {
+        $fod = Test-FieldkitFodSource
+        Write-Host ''
+        switch ($fod.State) {
+            'Ready' {
+                Write-Host '  Optional feature source: OK' -ForegroundColor Green
+                Write-Host ("  $($fod.Reason)") -ForegroundColor DarkGray
+            }
+            'Blocked' {
+                Write-Host '  OPTIONAL FEATURE SOURCE IS BLOCKED' -ForegroundColor Red
+                Write-Host ''
+                Write-Host "  $($fod.Reason)" -ForegroundColor Yellow
+                Write-Host ''
+                Write-Host '  THE FIX' -ForegroundColor Cyan
+                Write-Host "  $($fod.Fix)" -ForegroundColor Cyan
+                Write-Host ''
+                Write-Host '  You can still try. It costs a few minutes and it will most likely' -ForegroundColor Yellow
+                Write-Host '  fail with 0x800f0954. Carrying the module in from another machine' -ForegroundColor Yellow
+                Write-Host '  is often faster than getting the policy changed.'                  -ForegroundColor Yellow
+                Write-FieldkitLog -Level 'WARN' -Message "FoD source blocked before installing $($Prereq.Id): WSUS-managed with no Windows Update fallback"
+            }
+            default {
+                Write-Host '  Optional feature source: COULD NOT DETERMINE' -ForegroundColor DarkYellow
+                Write-Host ("  $($fod.Reason)") -ForegroundColor DarkGray
+                if ($fod.Fix) { Write-Host ("  $($fod.Fix)") -ForegroundColor DarkGray }
+            }
+        }
+    }
+
     if (-not (Confirm-FieldkitChange -What $Prereq.Name -Command $cmd)) {
         Write-Host '  Cancelled. Nothing was changed.' -ForegroundColor Green
         Write-FieldkitLog -Level 'INFO' -Message "Install of $($Prereq.Id) cancelled at prompt"
@@ -272,6 +446,20 @@ function Install-FieldkitPrereq {
             Install-Module -Name $modName -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
             $ok = $true
         }
+        elseif ($cmd -like 'winget*') {
+            # winget is absent on Server 2019 and 2016, and on a machine where
+            # App Installer was never provisioned. Say which it is.
+            if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
+                throw 'winget is not available on this machine. It ships with Windows 11 and Windows Server 2025, but not with Server 2019 or 2016. Install this by hand instead.'
+            }
+            $args = ($cmd -replace '^winget\s+', '')
+            Write-Host ''
+            & winget.exe @($args -split '\s+') 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+            # winget is a native tool: its exit code is the only reliable
+            # signal. 0 is success, and -1978335189 means already installed.
+            $ok = ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq -1978335189)
+            if (-not $ok) { throw "winget exited with code $LASTEXITCODE" }
+        }
         else {
             throw "Unrecognized install command form: $cmd"
         }
@@ -281,6 +469,15 @@ function Install-FieldkitPrereq {
         Write-Host "  INSTALL FAILED: $($_.Exception.Message)" -ForegroundColor Red
         Write-FieldkitLog -Level 'ERROR' -Message "INSTALL FAILED $($Prereq.Id): $($_.Exception.Message)"
         return $false
+    }
+
+    # The command may report failure without throwing. Say so, then check
+    # anyway, because the two answers disagree more often than you would hope.
+    if (-not $ok) {
+        Write-Host ''
+        Write-Host '  The install command reported that it did not succeed. Checking' -ForegroundColor Yellow
+        Write-Host '  whether it worked regardless.'                                  -ForegroundColor Yellow
+        Write-FieldkitLog -Level 'WARN' -Message "$($Prereq.Id) install command reported failure; verifying by detection"
     }
 
     # Do not trust the install's own success flag. Re-run the detection.

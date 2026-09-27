@@ -22,7 +22,7 @@ $script:FieldkitConfig = [pscustomobject]@{
     KitRoot    = 'C:\work\Fieldkit'
     OutputRoot = 'C:\work\Output'
     LogRoot    = 'C:\work\Logs'
-    Version    = '1.0.0'
+    Version    = '1.1.0'
 }
 
 function Get-FieldkitConfig { $script:FieldkitConfig }
