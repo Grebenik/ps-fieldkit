@@ -22,7 +22,7 @@ $script:FieldkitConfig = [pscustomobject]@{
     KitRoot    = 'C:\work\Fieldkit'
     OutputRoot = 'C:\work\Output'
     LogRoot    = 'C:\work\Logs'
-    Version    = '1.1.0'
+    Version    = '1.2.0'
 }
 
 function Get-FieldkitConfig { $script:FieldkitConfig }
@@ -157,6 +157,12 @@ function Get-FieldkitToolMetadata {
         Scope      = 'Unknown'
         Output     = [System.IO.Path]::GetFileNameWithoutExtension($Path)
         ReadOnly   = 'Unknown'
+        # How this tool can reach other machines:
+        #   No       local only
+        #   Yes      can be shipped to a target through the remote shim
+        #   Native   takes its own -Server / -DomainName; already remote-capable
+        #   Console  runs here and targets remote machines itself
+        Remote     = 'No'
         Documented = $false
     }
 
@@ -178,6 +184,7 @@ function Get-FieldkitToolMetadata {
             'Scope'     { $meta.Scope     = $val }
             'Output'    { $meta.Output    = $val }
             'ReadOnly'  { $meta.ReadOnly  = $val }
+            'Remote'    { $meta.Remote    = $val }
             'Requires'  {
                 if ($val -and $val -ne 'None') {
                     $meta.Requires = @($val -split ',' | ForEach-Object { $_.Trim() } |
@@ -258,12 +265,21 @@ function Invoke-FieldkitSection {
         $Notes
     )
 
+    # NOTE: the guards below are "$null -ne $Notes", NOT "if ($Notes)".
+    #
+    # PowerShell evaluates a collection's truth by its COUNT, so an EMPTY list
+    # is false. Written as "if ($Notes)", the first note of a run is silently
+    # dropped, because at that moment the list is empty. That means a NOT READ
+    # never reaches SUMMARY.txt whenever the first thing to fail is the first
+    # thing to be recorded - which is exactly the failure this whole function
+    # exists to prevent. Do not simplify it back.
+
     Write-Host ("  {0,-44} " -f $Name) -NoNewline
     try {
         $rows = @(& $Body)
         if ($rows.Count -eq 0) {
             Write-Host 'no rows' -ForegroundColor DarkYellow
-            if ($Notes) { $Notes.Add("EMPTY     $Name - the query ran and returned nothing.") }
+            if ($null -ne $Notes) { $Notes.Add("EMPTY     $Name - the query ran and returned nothing.") }
             return
         }
         $safe = ($Name -replace '[^A-Za-z0-9]+', '-').Trim('-')
@@ -274,7 +290,7 @@ function Invoke-FieldkitSection {
     catch {
         Write-Host 'NOT READ' -ForegroundColor Red
         Write-Host ("      {0}" -f $_.Exception.Message) -ForegroundColor DarkGray
-        if ($Notes) { $Notes.Add("NOT READ  $Name - $($_.Exception.Message)") }
+        if ($null -ne $Notes) { $Notes.Add("NOT READ  $Name - $($_.Exception.Message)") }
     }
 }
 

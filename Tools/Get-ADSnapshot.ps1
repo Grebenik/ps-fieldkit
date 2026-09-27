@@ -7,6 +7,7 @@ Elevation : Recommended
 Scope     : Domain
 Output    : ADSnapshot
 ReadOnly  : Yes
+Remote    : Native
 FIELDKIT#>
 
 <#

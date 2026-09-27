@@ -45,6 +45,7 @@ $here = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 try {
     . (Join-Path $here 'Lib\Fieldkit.Common.ps1')
     . (Join-Path $here 'Lib\Fieldkit.Prereqs.ps1')
+    . (Join-Path $here 'Lib\Fieldkit.Remote.ps1')
 }
 catch {
     Write-Host ''
@@ -69,6 +70,17 @@ if (-not (Initialize-FieldkitWorkspace)) { exit 1 }
 $ErrorActionPreference = 'Continue'
 $cfg = Get-FieldkitConfig
 Write-FieldkitLog -Level 'INFO' -Message "Fieldkit $($cfg.Version) started from $here"
+
+# --------------------------------------------------------------------------
+# Remote state, held for the session only.
+#
+# The credential is kept in memory and never written anywhere. The target list
+# is deliberately empty at startup: nothing is ever contacted unless you said
+# what to contact.
+# --------------------------------------------------------------------------
+$script:Targets    = @()
+$script:TargetsFrom = ''
+$script:Credential = $null
 
 # --------------------------------------------------------------------------- display
 function Get-ToolStatus {
@@ -115,6 +127,17 @@ function Show-MainMenu {
     Write-Host -NoNewline '   Elevated  : '
     Write-Host $elev -ForegroundColor $(if ($elev -eq 'yes') { 'Green' } else { 'Yellow' })
     Write-Host ("   Work root : {0}" -f $cfg.WorkRoot)
+    Write-Host -NoNewline '   Targets   : '
+    if ($script:Targets.Count) {
+        Write-Host ("{0} remote system(s)" -f $script:Targets.Count) -ForegroundColor Cyan -NoNewline
+        Write-Host ("  [{0}]" -f $script:TargetsFrom) -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host 'none - tools run on THIS machine only' -ForegroundColor DarkGray
+    }
+    if ($script:Credential) {
+        Write-Host ("   Credential: {0}" -f $script:Credential.UserName) -ForegroundColor Cyan
+    }
     Write-Host ''
 
     if (-not $Tools -or $Tools.Count -eq 0) {
@@ -144,6 +167,8 @@ function Show-MainMenu {
 
     Write-Host '   ---------------------------------------------------------------------'
     Write-Host '    number   run that tool'
+    Write-Host '    T        targets: choose which remote systems to run against'
+    Write-Host '    C        credential for remote connections (memory only)'
     Write-Host '    P        prerequisites: check what is here, install what is not'
     Write-Host '    F        force-run a tool, skipping the prerequisite check'
     Write-Host '    I        information about a tool, without running it'
@@ -194,8 +219,201 @@ function Invoke-FieldkitTool {
     Read-Host '  Press Enter to return to the menu' | Out-Null
 }
 
+function Invoke-FieldkitToolRemotely {
+    <#
+        Run a tool against the session's target list.
+
+        The tool is shipped through the remote shim, so it returns objects and
+        writes nothing to any target. Coverage is reported before any finding.
+    #>
+    param($Tool)
+
+    if ($Tool.Remote -eq 'No') {
+        Write-Host ''
+        Write-Host ("  {0} is not remote-capable." -f $Tool.Name) -ForegroundColor Yellow
+        Write-Host '  Its header says Remote: No. Run it locally, or on the target itself.' -ForegroundColor DarkGray
+        Write-Host ''
+        Read-Host '  Press Enter to return to the menu' | Out-Null
+        return
+    }
+
+    if ($Tool.Remote -eq 'Native') {
+        Write-Host ''
+        Write-Host ("  {0} reaches other machines by itself." -f $Tool.Name) -ForegroundColor Cyan
+        Write-Host '  It takes -Server or -DomainName and queries the directory directly,'  -ForegroundColor DarkGray
+        Write-Host '  so it does not need a target list and is not shipped anywhere. Run it' -ForegroundColor DarkGray
+        Write-Host '  locally; to point it at a specific server, run it from a prompt with'  -ForegroundColor DarkGray
+        Write-Host '  -Server <name>.'                                                      -ForegroundColor DarkGray
+        Write-Host ''
+        Read-Host '  Press Enter to return to the menu' | Out-Null
+        return
+    }
+
+    $out = New-FieldkitOutputFolder -ToolOutputName ("{0}-REMOTE" -f $Tool.Output)
+
+    Write-Host ''
+    Write-Host ('  ' + ('=' * 70)) -ForegroundColor Cyan
+    Write-Host ("   {0}, against {1} target(s)" -f $Tool.Name, $script:Targets.Count) -ForegroundColor Cyan
+    Write-Host ('  ' + ('=' * 70)) -ForegroundColor Cyan
+    Write-Host ("   Output : {0}" -f $out)
+    Write-Host ("   As     : {0}" -f $(if ($script:Credential) { $script:Credential.UserName } else { "$env:USERDOMAIN\$env:USERNAME (current session)" }))
+    Write-Host ''
+    Write-Host '   Nothing is written to any target. The tool runs through the remote' -ForegroundColor DarkGray
+    Write-Host '   shim, which returns objects; this machine writes every file.'       -ForegroundColor DarkGray
+    Write-Host ''
+
+    Write-FieldkitLog -Level 'RUN' -Message "REMOTE START $($Tool.File) against $($script:Targets.Count) target(s)"
+
+    try {
+        $outcome = Invoke-FieldkitRemoteTool -ToolPath $Tool.Path `
+                        -ShimPath (Join-Path $here 'Lib\Fieldkit.RemoteShim.ps1') `
+                        -Targets $script:Targets -Credential $script:Credential
+        Write-FieldkitRemoteResult -Outcome $outcome -OutputFolder $out -Title ("{0} (remote)" -f $Tool.Name)
+
+        $reached = @($outcome.Coverage | Where-Object { $_.Status -eq 'OK' }).Count
+        Write-FieldkitLog -Level 'RUN' -Message "REMOTE END   $($Tool.File): $reached of $($script:Targets.Count) reached"
+    }
+    catch {
+        Write-Host ''
+        Write-Host "  The sweep stopped with an error: $($_.Exception.Message)" -ForegroundColor Red
+        Write-FieldkitLog -Level 'ERROR' -Message "REMOTE FAIL  $($Tool.File): $($_.Exception.Message)"
+    }
+
+    Write-Host ''
+    Read-Host '  Press Enter to return to the menu' | Out-Null
+}
+
+function Show-TargetMenu {
+    while ($true) {
+        Clear-Host
+        Write-Host ''
+        Write-Host '   TARGETS' -ForegroundColor Cyan
+        Write-Host ''
+        if ($script:Targets.Count) {
+            Write-Host ("   {0} target(s), from {1}" -f $script:Targets.Count, $script:TargetsFrom)
+            foreach ($t in ($script:Targets | Select-Object -First 15)) { Write-Host "     $t" }
+            if ($script:Targets.Count -gt 15) {
+                Write-Host ("     ... and {0} more" -f ($script:Targets.Count - 15)) -ForegroundColor DarkGray
+            }
+        }
+        else {
+            Write-Host '   No targets set. Tools run on THIS machine.' -ForegroundColor DarkGray
+        }
+        Write-Host ''
+        Write-Host '   A target list is never implied. Nothing is contacted unless you' -ForegroundColor DarkGray
+        Write-Host '   said what to contact.'                                           -ForegroundColor DarkGray
+        Write-Host ''
+        Write-Host '    1   type a list of names'
+        Write-Host '    2   load from a file (one per line, or a CSV with a name column)'
+        Write-Host '    3   build from Active Directory (shows the list, asks to confirm)'
+        Write-Host '    4   clear the target list'
+        Write-Host '    B   back'
+        Write-Host ''
+        $c = (Read-Host '  Choice').Trim().ToUpper()
+
+        $set = $null
+        try {
+            switch ($c) {
+                '1' {
+                    $raw = Read-Host '  Names, separated by commas'
+                    if ($raw) { $set = Get-FieldkitTarget -ComputerName $raw }
+                }
+                '2' {
+                    $f = (Read-Host '  Path to the target file').Trim('"')
+                    $x = Read-Host '  Path to an exclusion file (Enter for none)'
+                    if ($f) { $set = Get-FieldkitTarget -InputFile $f -ExcludeFile $(if ($x) { $x.Trim('"') } else { $null }) }
+                }
+                '3' {
+                    Write-Host ''
+                    Write-Host '  An AD-derived list can reach machines nobody meant to touch.' -ForegroundColor Yellow
+                    Write-Host '  Anything fragile belongs in an exclusion file.'               -ForegroundColor Yellow
+                    Write-Host ''
+                    $filter = Read-Host '  AD filter (Enter for: Enabled -eq $true)'
+                    if (-not $filter) { $filter = 'Enabled -eq $true' }
+                    $x = Read-Host '  Path to an exclusion file (Enter for none)'
+                    $set = Get-FieldkitTarget -FromAD -ADFilter $filter `
+                                -ExcludeFile $(if ($x) { $x.Trim('"') } else { $null })
+                }
+                '4' {
+                    $script:Targets = @(); $script:TargetsFrom = ''
+                    Write-Host '  Cleared.' -ForegroundColor Green
+                    Start-Sleep -Milliseconds 700
+                    continue
+                }
+                default { return }
+            }
+        }
+        catch {
+            Write-Host ''
+            Write-Host "  Could not build the list: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host ''
+            Read-Host '  Press Enter to continue' | Out-Null
+            continue
+        }
+
+        if ($set) {
+            if (Confirm-FieldkitTargetList -TargetSet $set -Action 'target') {
+                $script:Targets     = @($set.Targets)
+                $script:TargetsFrom = $set.Source
+                Write-FieldkitLog -Level 'INFO' -Message "Target list set: $($set.Targets.Count) from $($set.Source)"
+                Write-Host ''
+                Write-Host ("  {0} target(s) set." -f $set.Targets.Count) -ForegroundColor Green
+            }
+            Write-Host ''
+            Read-Host '  Press Enter to continue' | Out-Null
+        }
+    }
+}
+
 function Invoke-ToolWithPrereqGate {
     param($Tool, $PrereqState)
+
+    # A console-side remote tool takes the target list as parameters and does
+    # its own connecting.
+    if ($Tool.Remote -eq 'Console') {
+        Write-Host ''
+        if (-not $script:Targets.Count) {
+            Write-Host ("  {0} needs a target list. Set one with T first." -f $Tool.Name) -ForegroundColor Yellow
+            Write-Host ''
+            Read-Host '  Press Enter to return to the menu' | Out-Null
+            return $true
+        }
+        Write-FieldkitLog -Level 'RUN' -Message "START $($Tool.File) against $($script:Targets.Count) target(s)"
+        try {
+            if ($script:Credential) {
+                & $Tool.Path -ComputerName $script:Targets -Credential $script:Credential
+            }
+            else {
+                & $Tool.Path -ComputerName $script:Targets
+            }
+        }
+        catch {
+            Write-Host ''
+            Write-Host "  The tool stopped: $($_.Exception.Message)" -ForegroundColor Red
+            Write-FieldkitLog -Level 'ERROR' -Message "FAIL  $($Tool.File): $($_.Exception.Message)"
+        }
+        Write-Host ''
+        Read-Host '  Press Enter to return to the menu' | Out-Null
+        return $true
+    }
+
+    # With targets set, never assume which machine was meant. Running a sweep
+    # when local was intended contacts other people's servers; running local
+    # when a sweep was intended quietly assesses the wrong machine.
+    if ($script:Targets.Count -and $Tool.Remote -eq 'Yes') {
+        Write-Host ''
+        Write-Host ("  {0} target(s) are set." -f $script:Targets.Count) -ForegroundColor Cyan
+        Write-Host ''
+        Write-Host ("    R   run against the {0} target(s)" -f $script:Targets.Count)
+        Write-Host  '    L   run on THIS machine only'
+        Write-Host  '    B   back'
+        Write-Host ''
+        switch ((Read-Host '  Choice').Trim().ToUpper()) {
+            'R' { Invoke-FieldkitToolRemotely -Tool $Tool; return $true }
+            'L' { }   # fall through to the local path below
+            default { return $false }
+        }
+    }
 
     $st = Get-ToolStatus -Tool $Tool -PrereqState $PrereqState
     if ($st.Ready) { Invoke-FieldkitTool -Tool $Tool; return $true }
@@ -320,6 +538,13 @@ function Show-ToolInfo {
     Write-Host ("   Scope      : {0}" -f $Tool.Scope)
     Write-Host ("   Elevation  : {0}" -f $Tool.Elevation)
     Write-Host ("   Read-only  : {0}" -f $Tool.ReadOnly)
+    Write-Host -NoNewline ("   Remote     : {0}" -f $Tool.Remote)
+    switch ($Tool.Remote) {
+        'Yes'     { Write-Host '  (can be shipped to targets; writes nothing to them)' -ForegroundColor DarkGray }
+        'Native'  { Write-Host '  (reaches other machines itself, via -Server)' -ForegroundColor DarkGray }
+        'Console' { Write-Host '  (runs here and targets remote machines)' -ForegroundColor DarkGray }
+        default   { Write-Host '  (local machine only)' -ForegroundColor DarkGray }
+    }
     Write-Host ("   Requires   : {0}" -f $(if ($Tool.Requires.Count) { $Tool.Requires -join ', ' } else { 'nothing' }))
     Write-Host ("   Output to  : {0}\{1}-..." -f $cfg.OutputRoot, $Tool.Output)
     Write-Host ''
@@ -368,6 +593,28 @@ while ($true) {
             Write-Host ("  Log is in    {0}" -f $cfg.LogRoot)    -ForegroundColor Green
             Write-Host ''
             return
+        }
+        '^[Tt]$' { Show-TargetMenu; continue }
+        '^[Cc]$' {
+            Write-Host ''
+            if ($script:Credential) {
+                Write-Host ("  Currently: {0}" -f $script:Credential.UserName)
+                if ((Read-Host '  Clear it? (y/N)').Trim().ToUpper() -eq 'Y') {
+                    $script:Credential = $null
+                    Write-Host '  Cleared.' -ForegroundColor Green
+                    Start-Sleep -Milliseconds 700
+                    continue
+                }
+            }
+            Write-Host '  Held in memory for this session only, never written to disk.' -ForegroundColor DarkGray
+            Write-Host '  Leave blank to use the account this session is already running as.' -ForegroundColor DarkGray
+            Write-Host ''
+            try {
+                $c = Get-Credential -Message 'Credential for remote connections'
+                if ($c) { $script:Credential = $c }
+            }
+            catch { Write-Host '  Cancelled.' -ForegroundColor DarkGray; Start-Sleep -Milliseconds 700 }
+            continue
         }
         '^[Pp]$' { Show-PrereqMenu; $pstate = Get-FieldkitPrereqState; continue }
         '^[Rr]$' {

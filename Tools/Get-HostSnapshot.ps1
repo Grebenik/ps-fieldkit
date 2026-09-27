@@ -7,6 +7,7 @@ Elevation : Recommended
 Scope     : Local machine
 Output    : HostSnapshot
 ReadOnly  : Yes
+Remote    : Yes
 FIELDKIT#>
 
 <#

@@ -101,6 +101,9 @@ A tool that is missing something is not hidden and does not fail halfway
 through. It is marked with what it needs, and choosing it offers to install
 that thing, to run it anyway, or to go back.
 
+`T` sets a list of remote systems; with one set, choosing a tool asks whether you
+meant this machine or the targets. See [Docs/REMOTE.md](Docs/REMOTE.md).
+
 **`F` runs a tool with no prerequisite check at all.** Use it when you know
 better than the check does: a module present under a path the detection does
 not look at, a machine where the detection itself is broken, or a tool you only
@@ -182,6 +185,7 @@ second as the first, and it will do it in a document with your name on it.
 | **Patch Posture** | nothing | Where does it get updates, is it allowed to install them, when did it last actually do so |
 | **Active Directory Snapshot** | `RSAT-AD` | Functional levels, FSMO roles, trusts, password policy, privileged groups, krbtgt age, stale and risky accounts |
 | **Group Policy Inventory** | `RSAT-GP`, `RSAT-AD` | Every GPO, where it is linked, what is unlinked or empty, and optional full settings reports |
+| **Remote Readiness** | nothing | Which targets can be reached, by WinRM or DCOM, which answer nothing at all, and which names are stale AD objects rather than unreachable machines |
 | **Jumpbox Posture** | nothing | **Audits the admin workstation you are standing on**: Credential Guard, LSA protection, BitLocker, cached logons, RDP delegation, PowerShell logging, application control, LAPS, and what privilege your own token holds |
 
 **Jumpbox Posture is the one that audits you.** Every credential you use on an
@@ -211,6 +215,24 @@ Enterprise Admins and Schema Admins exist only in the forest root, so one query
 against a child domain would otherwise end the whole loop at the first group.
 Each group is wrapped on its own, and a group that is not present is recorded as
 not present rather than as empty.
+
+---
+
+## Remote targeting
+
+`T` in the menu sets a list of remote systems. Tools marked `Remote: Yes` are
+then shipped to each target and **write nothing to it** — they run through a shim
+that returns objects, so no folder is created and nothing is copied back.
+
+**Coverage is reported before any finding.** With 200 targets, "we assessed the
+estate and found three problems" is a dangerous sentence if 150 were never
+reached, so every run leads with reached, unreachable, and why.
+
+**Targets are never implied.** Explicit lists, a file you have read, or
+`-FromAD` — and the AD path shows the resolved list, honors an exclusion file,
+and requires typed confirmation before contacting anything.
+
+Run `Test-RemoteReadiness` first. Full detail in [Docs/REMOTE.md](Docs/REMOTE.md).
 
 ---
 

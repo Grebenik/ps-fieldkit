@@ -7,6 +7,7 @@ Elevation : Recommended
 Scope     : Local machine
 Output    : PatchPosture
 ReadOnly  : Yes
+Remote    : Yes
 FIELDKIT#>
 
 <#

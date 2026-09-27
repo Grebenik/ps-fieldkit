@@ -7,6 +7,7 @@ Elevation : Required
 Scope     : Local machine
 Output    : JumpboxPosture
 ReadOnly  : Yes
+Remote    : Yes
 FIELDKIT#>
 
 <#

@@ -7,6 +7,7 @@ Elevation : Recommended
 Scope     : Domain
 Output    : GPOInventory
 ReadOnly  : Yes
+Remote    : Native
 FIELDKIT#>
 
 <#
