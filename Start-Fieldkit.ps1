@@ -46,6 +46,7 @@ try {
     . (Join-Path $here 'Lib\Fieldkit.Common.ps1')
     . (Join-Path $here 'Lib\Fieldkit.Prereqs.ps1')
     . (Join-Path $here 'Lib\Fieldkit.Remote.ps1')
+    . (Join-Path $here 'Lib\Fieldkit.Excel.ps1')
 }
 catch {
     Write-Host ''
@@ -172,6 +173,7 @@ function Show-MainMenu {
     Write-Host '    P        prerequisites: check what is here, install what is not'
     Write-Host '    F        force-run a tool, skipping the prerequisite check'
     Write-Host '    I        information about a tool, without running it'
+    Write-Host '    X        build an Excel workbook from an output folder'
     Write-Host '    O        open the output folder'
     Write-Host '    L        show this machine''s Fieldkit log'
     Write-Host '    R        refresh (re-read Tools\ and re-check prerequisites)'
@@ -204,6 +206,9 @@ function Invoke-FieldkitTool {
         Write-Host ''
         Write-Host ("  Finished in {0:N1} seconds." -f $sw.Elapsed.TotalSeconds) -ForegroundColor Green
         Write-FieldkitLog -Level 'RUN' -Message ("END   {0}  {1:N1}s" -f $Tool.File, $sw.Elapsed.TotalSeconds)
+
+        $latest = Get-FieldkitLatestOutput -Prefix $Tool.Output
+        if ($latest) { Invoke-FieldkitWorkbookIfAvailable -OutputFolder $latest.FullName }
     }
     catch {
         $sw.Stop()
@@ -217,6 +222,114 @@ function Invoke-FieldkitTool {
     }
     Write-Host ''
     Read-Host '  Press Enter to return to the menu' | Out-Null
+}
+
+function Get-FieldkitLatestOutput {
+    <#
+        The folder a tool just wrote to.
+
+        A tool creates its own output folder and does not report the path back,
+        so the menu finds the newest folder matching that tool's prefix. The age
+        limit keeps it from picking up a run from last week if the tool failed
+        before creating anything this time.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $Prefix,
+        [int] $MaxAgeMinutes = 30
+    )
+    $cfg = Get-FieldkitConfig
+    $cut = (Get-Date).AddMinutes(-$MaxAgeMinutes)
+    @(Get-ChildItem -LiteralPath $cfg.OutputRoot -Directory -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -like "$Prefix-$env:COMPUTERNAME-*" -and $_.LastWriteTime -gt $cut } |
+      Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+}
+
+function Invoke-FieldkitWorkbookIfAvailable {
+    <#
+        Build a workbook after a run, when ImportExcel is installed.
+
+        Silent when the module is absent. Excel output is a convenience and its
+        absence is not a problem to report every time: the CSVs are complete,
+        and the prerequisites menu already says whether the module is there.
+    #>
+    param([string] $OutputFolder)
+
+    if (-not $OutputFolder -or -not (Test-Path -LiteralPath $OutputFolder)) { return }
+    if ((Test-FieldkitExcel).State -ne 'Present') { return }
+    try   { $null = Export-FieldkitWorkbook -OutputFolder $OutputFolder }
+    catch { Write-Host "  (workbook not written: $($_.Exception.Message))" -ForegroundColor DarkYellow }
+}
+
+function Show-WorkbookMenu {
+    <# Build a workbook from any previous output folder. #>
+    $cfg = Get-FieldkitConfig
+    $excel = Test-FieldkitExcel
+
+    Clear-Host
+    Write-Host ''
+    Write-Host '   WORKBOOK' -ForegroundColor Cyan
+    Write-Host ''
+    Write-Host -NoNewline '   ImportExcel: '
+    switch ($excel.State) {
+        'Present' { Write-Host ("present, {0}" -f $excel.Version) -ForegroundColor Green }
+        'Absent'  { Write-Host 'NOT INSTALLED' -ForegroundColor Yellow }
+        default   { Write-Host 'COULD NOT CHECK' -ForegroundColor DarkYellow }
+    }
+    if ($excel.State -ne 'Present') {
+        Write-Host ("   {0}" -f $excel.Reason) -ForegroundColor DarkGray
+        Write-Host ''
+        Write-Host '   Install it from the prerequisites menu (P). Nothing else depends on' -ForegroundColor DarkGray
+        Write-Host '   it: every run writes complete CSVs either way.'                      -ForegroundColor DarkGray
+        Write-Host ''
+        Read-Host '  Press Enter to return to the menu' | Out-Null
+        return
+    }
+
+    $folders = @(Get-ChildItem -LiteralPath $cfg.OutputRoot -Directory -ErrorAction SilentlyContinue |
+                 Sort-Object LastWriteTime -Descending | Select-Object -First 20)
+    if (-not $folders.Count) {
+        Write-Host '   No output folders yet. Run a tool first.' -ForegroundColor Yellow
+        Write-Host ''
+        Read-Host '  Press Enter to return to the menu' | Out-Null
+        return
+    }
+
+    Write-Host ''
+    Write-Host '   Most recent output folders:'
+    Write-Host ''
+    $i = 0; $map = @{}
+    foreach ($f in $folders) {
+        $i++; $map[$i] = $f
+        $hasXlsx = @(Get-ChildItem -LiteralPath $f.FullName -Filter '*.xlsx' -File -ErrorAction SilentlyContinue).Count -gt 0
+        Write-Host ("    {0,2}  {1:yyyy-MM-dd HH:mm}  {2}" -f $i, $f.LastWriteTime, $f.Name) -NoNewline
+        if ($hasXlsx) { Write-Host '  [has a workbook]' -ForegroundColor DarkGray } else { Write-Host '' }
+    }
+    Write-Host ''
+    Write-Host '    number   build a workbook from that folder'
+    Write-Host '    H<n>     include the per-host sheets too (e.g. H3)'
+    Write-Host '    B        back'
+    Write-Host ''
+    Write-Host '   Per-host sheets are excluded by default: a 200-machine sweep would' -ForegroundColor DarkGray
+    Write-Host '   produce thousands of worksheets, which is not a readable document.'  -ForegroundColor DarkGray
+    Write-Host ''
+    $c = (Read-Host '  Choice').Trim()
+    if ($c -match '^[Bb]$' -or $c -eq '') { return }
+
+    $byHost = $false
+    if ($c -match '^[Hh](\d+)$') { $byHost = $true; $c = $Matches[1] }
+
+    $num = 0
+    if ([int]::TryParse($c, [ref]$num) -and $map.ContainsKey($num)) {
+        try {
+            $null = Export-FieldkitWorkbook -OutputFolder $map[$num].FullName -IncludeByHost:$byHost
+            Write-FieldkitLog -Level 'INFO' -Message "Workbook built for $($map[$num].Name)"
+        }
+        catch {
+            Write-Host "  Failed: $($_.Exception.Message)" -ForegroundColor Red
+        }
+        Write-Host ''
+        Read-Host '  Press Enter to return to the menu' | Out-Null
+    }
 }
 
 function Invoke-FieldkitToolRemotely {
@@ -269,6 +382,7 @@ function Invoke-FieldkitToolRemotely {
                         -ShimPath (Join-Path $here 'Lib\Fieldkit.RemoteShim.ps1') `
                         -Targets $script:Targets -Credential $script:Credential
         Write-FieldkitRemoteResult -Outcome $outcome -OutputFolder $out -Title ("{0} (remote)" -f $Tool.Name)
+        Invoke-FieldkitWorkbookIfAvailable -OutputFolder $out
 
         $reached = @($outcome.Coverage | Where-Object { $_.Status -eq 'OK' }).Count
         Write-FieldkitLog -Level 'RUN' -Message "REMOTE END   $($Tool.File): $reached of $($script:Targets.Count) reached"
@@ -628,6 +742,7 @@ while ($true) {
             $pstate = Get-FieldkitPrereqState
             continue
         }
+        '^[Xx]$' { Show-WorkbookMenu; continue }
         '^[Oo]$' {
             Start-Process explorer.exe $cfg.OutputRoot
             continue

@@ -143,6 +143,22 @@ function Get-FieldkitPrereqCatalog {
             Notes         = 'Needs winget, which is present on Windows 11 and on Windows Server 2025 but not on Server 2019 or 2016. Every tool in this kit runs on 5.1, so this is a convenience.'
         }
         [pscustomobject]@{
+            Id            = 'PS-MODULE-ImportExcel'
+            Name          = 'ImportExcel module'
+            Why           = 'Turns an output folder into one formatted Excel workbook. Optional: CSVs are always written regardless.'
+            Test          = {
+                try {
+                    if (Get-Module -ListAvailable -Name ImportExcel -ErrorAction Stop) { 'Present' }
+                    else { 'Absent' }
+                } catch { 'Unknown' }
+            }
+            InstallServer = 'Install-Module ImportExcel -Scope CurrentUser -Force'
+            InstallClient = 'Install-Module ImportExcel -Scope CurrentUser -Force'
+            Elevation     = $false
+            Internet      = $true
+            Notes         = 'Apache-2.0, by Douglas Finke. Needs no Excel installed. NOTE: 5.1 and 7.x have separate module paths, so installing it from the other PowerShell puts it where this session cannot see it - install it from HERE. Many client networks block the Gallery; that is a normal answer, not a fault, and nothing else stops working without it.'
+        }
+        [pscustomobject]@{
             Id            = 'PS-MODULE-PSWindowsUpdate'
             Name          = 'PSWindowsUpdate module'
             Why           = 'Reads pending and installed updates without a WSUS console.'
@@ -442,8 +458,58 @@ function Install-FieldkitPrereq {
             }
         }
         elseif ($cmd -like 'Install-Module*') {
+            <#
+                Two things must be true before Install-Module works on a stock
+                Windows PowerShell 5.1 machine, and neither is by default. This
+                is exactly what a client server looks like.
+
+                  1. TLS. 5.1 does not negotiate TLS 1.2 by default and the
+                     PowerShell Gallery refuses anything less. The failure
+                     looks like a connection problem, not a protocol one.
+
+                  2. The NuGet provider. Without it, Install-Module fails with
+                     "CouldNotInstallNuGetProvider", and interactively it tries
+                     to PROMPT to install it - which hangs a non-interactive
+                     session rather than failing.
+
+                Both are handled here so the install either works or reports
+                the real reason.
+            #>
+            try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+
+            # -ListAvailable, NOT "-Name NuGet".
+            #
+            # "Get-PackageProvider -Name NuGet" tries to BOOTSTRAP the provider
+            # when it is missing, and it PROMPTS for consent to do so.
+            # -ErrorAction SilentlyContinue does not suppress that prompt. In a
+            # non-interactive session - a scheduled run, or anything with stdin
+            # redirected - it hangs forever instead of failing, which is the
+            # worst of the available outcomes. -ListAvailable only looks.
+            $haveNuGet = $false
+            try {
+                $haveNuGet = [bool](@(Get-PackageProvider -ListAvailable -ErrorAction SilentlyContinue) |
+                                    Where-Object { $_.Name -eq 'NuGet' })
+            } catch { $haveNuGet = $false }
+
+            if (-not $haveNuGet) {
+                Write-Host '  Bootstrapping the NuGet provider first (needed by the Gallery).' -ForegroundColor DarkGray
+                try {
+                    # -ForceBootstrap answers the consent prompt, for the same
+                    # reason as above.
+                    $null = Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 `
+                                -Force -ForceBootstrap -Scope CurrentUser `
+                                -Confirm:$false -ErrorAction Stop
+                }
+                catch {
+                    throw ("The NuGet provider could not be installed, so the Gallery is unreachable: " +
+                           "$($_.Exception.Message). On a locked-down network, copy the module folder in " +
+                           "from another machine instead.")
+                }
+            }
+
             $modName = ($cmd -split '\s+')[1]
-            Install-Module -Name $modName -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+            Install-Module -Name $modName -Scope CurrentUser -Force -AllowClobber `
+                           -ErrorAction Stop -Confirm:$false
             $ok = $true
         }
         elseif ($cmd -like 'winget*') {

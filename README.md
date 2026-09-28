@@ -218,6 +218,39 @@ not present rather than as empty.
 
 ---
 
+## Excel output
+
+`X` builds one formatted `.xlsx` from an output folder, and a run builds one
+automatically when ImportExcel is installed. Sheets get a bold frozen header row
+and an autofilter; `combined\` becomes one sheet per section.
+
+**It post-processes the CSVs.** No tool knows it exists and no tool changed. The
+CSVs stay the record — a workbook is a convenience for whoever reads it — and if
+ImportExcel is missing, nothing is lost.
+
+**Sheet 1 is "Read me first", built from `SUMMARY.txt`.** It carries the coverage
+figures and everything that was `NOT READ`. Somebody will open the workbook and
+never look at the text file, and fifteen tidy sheets that say nothing about the
+four sections which failed is a more convincing wrong answer than the CSVs ever
+were. Making output prettier must not make it less honest.
+
+Per-host sheets are excluded by default (`H<n>` in the menu includes them). A
+200-machine sweep would otherwise produce thousands of worksheets.
+
+**ImportExcel is not vendored** — Apache-2.0, by Douglas Finke, declared as an
+optional prerequisite and installed from the Gallery. No third-party license
+travels with this repo, and Fieldkit's read-only claim stays a claim about
+Fieldkit's own code.
+
+> **Install it from the same PowerShell you run the kit in.** Windows PowerShell
+> 5.1 and PowerShell 7 have **separate user module paths**
+> (`Documents\WindowsPowerShell\Modules` vs `Documents\PowerShell\Modules`). This
+> kit targets 5.1 because that is what a domain controller has, so installing
+> from a 7.x prompt puts the module where the kit cannot see it. The prerequisites
+> menu reports that case by name rather than just saying "not installed".
+
+---
+
 ## Remote targeting
 
 `T` in the menu sets a list of remote systems. Tools marked `Remote: Yes` are
